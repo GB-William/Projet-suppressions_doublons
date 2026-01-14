@@ -13,6 +13,25 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def lire_premiers_octets(filepath, n=5):
+    """
+    Lit les n premiers octets d'un fichier.
+    
+    Args:
+        filepath: Chemin vers le fichier
+        n: Nombre d'octets à lire
+    
+    Returns:
+        Les n premiers octets sous forme de bytes, ou None en cas d'erreur.
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            return f.read(n)
+    except (IOError, OSError) as e:
+        print(f"Erreur lors de la lecture des premiers octets de {filepath}: {e}", file=sys.stderr)
+        return None
+
+
 def calculer_hash_fichier(filepath, chunk_size=8192):
     """
     Calcule le hash MD5 d'un fichier.
@@ -43,9 +62,9 @@ def parcourir_repertoires(repertoires):
         repertoires: Liste des chemins de répertoires à parcourir
     
     Returns:
-        Dictionnaire {hash: [liste des chemins de fichiers]}
+        Dictionnaire {taille_en_octets: [liste des chemins de fichiers]}
     """
-    fichiers_par_hash = defaultdict(list)
+    fichiers_par_taille = defaultdict(list)
     fichiers_traites = 0
     
     for repertoire in repertoires:
@@ -67,28 +86,61 @@ def parcourir_repertoires(repertoires):
                 if fichiers_traites % 100 == 0:
                     print(f"  Fichiers analysés: {fichiers_traites}...", end='\r')
                 
-                hash_fichier = calculer_hash_fichier(fichier_path)
-                if hash_fichier:
-                    fichiers_par_hash[hash_fichier].append(fichier_path)
+                try:
+                    taille = fichier_path.stat().st_size
+                    fichiers_par_taille[taille].append(fichier_path)
+                except (OSError, IOError) as e:
+                    print(f"Erreur lors de la récupération de la taille de {fichier_path}: {e}", file=sys.stderr)
     
     print(f"\nTotal de fichiers analysés: {fichiers_traites}")
-    return fichiers_par_hash
+    return fichiers_par_taille
 
 
-def identifier_doublons(fichiers_par_hash):
+def identifier_doublons(fichiers_par_taille):
     """
-    Identifie les fichiers en double (même hash).
+    Identifie les fichiers en double en plusieurs étapes :
+      1. Regroupe les fichiers par taille (déjà fait dans fichiers_par_taille).
+      2. Pour chaque taille, regroupe par les 5 premiers octets.
+      3. Pour chaque groupe ayant même taille et mêmes 5 octets, calcule le hash MD5
+         pour confirmer les doublons.
     
     Args:
-        fichiers_par_hash: Dictionnaire {hash: [liste des chemins]}
+        fichiers_par_taille: Dictionnaire {taille: [liste des chemins]}
     
     Returns:
         Liste de groupes de fichiers en double
     """
     doublons = []
-    for hash_fichier, chemins in fichiers_par_hash.items():
-        if len(chemins) > 1:
-            doublons.append(chemins)
+    
+    # Étape 1 déjà réalisée : on reçoit déjà les fichiers regroupés par taille.
+    for taille, chemins in fichiers_par_taille.items():
+        if len(chemins) < 2:
+            continue  # avec une seule occurrence, aucun doublon possible
+        
+        # Étape 2 : regrouper par 5 premiers octets
+        groupes_par_prefixe = defaultdict(list)
+        for chemin in chemins:
+            prefixe = lire_premiers_octets(chemin, n=5)
+            if prefixe is None:
+                continue
+            groupes_par_prefixe[prefixe].append(chemin)
+        
+        # Étape 3 : pour chaque groupe ayant même taille et même préfixe,
+        # calculer les hash MD5 pour trouver les vrais doublons
+        for prefixe, chemins_meme_prefixe in groupes_par_prefixe.items():
+            if len(chemins_meme_prefixe) < 2:
+                continue
+            
+            fichiers_par_hash = defaultdict(list)
+            for chemin in chemins_meme_prefixe:
+                hash_fichier = calculer_hash_fichier(chemin)
+                if hash_fichier:
+                    fichiers_par_hash[hash_fichier].append(chemin)
+            
+            for hash_fichier, chemins_hash in fichiers_par_hash.items():
+                if len(chemins_hash) > 1:
+                    doublons.append(chemins_hash)
+    
     return doublons
 
 
