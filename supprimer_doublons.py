@@ -12,102 +12,65 @@ import argparse
 from collections import defaultdict
 from pathlib import Path
 
+def regrouper_par_taille(fichiers: list[Path]) -> dict[int, list[Path]]:
+    """
+    Regroupe les fichiers par taille et élimine les tailles uniques.
+    """
+    tailles = defaultdict(list)
 
-def calculer_hash_fichier(filepath, chunk_size=8192):
-    """
-    Calcule le hash MD5 d'un fichier.
-    
-    Args:
-        filepath: Chemin vers le fichier
-        chunk_size: Taille des blocs à lire (par défaut 8KB)
-    
-    Returns:
-        Hash MD5 du fichier en hexadécimal
-    """
-    hash_md5 = hashlib.md5()
-    try:
-        with open(filepath, 'rb') as f:
-            while chunk := f.read(chunk_size):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
-    except (IOError, OSError) as e:
-        print(f"Erreur lors de la lecture de {filepath}: {e}", file=sys.stderr)
-        return None
-
-
-def parcourir_repertoires(repertoires):
-    """
-    Parcourt récursivement les répertoires et collecte tous les fichiers.
-    
-    Args:
-        repertoires: Liste des chemins de répertoires à parcourir
-    
-    Returns:
-        Dictionnaire {hash: [liste des chemins de fichiers]}
-    """
-    fichiers_par_hash = defaultdict(list)
-    fichiers_traites = 0
-    
-    for repertoire in repertoires:
-        repertoire_path = Path(repertoire)
-        if not repertoire_path.exists():
-            print(f"Attention: Le répertoire '{repertoire}' n'existe pas. Ignoré.", file=sys.stderr)
+    for fichier in fichiers:
+        try:
+            taille = fichier.stat().st_size
+            tailles[taille].append(fichier)
+        except OSError:
             continue
-        
-        if not repertoire_path.is_dir():
-            print(f"Attention: '{repertoire}' n'est pas un répertoire. Ignoré.", file=sys.stderr)
+
+    # On ne garde que les tailles avec au moins deux fichiers
+    return {t: lst for t, lst in tailles.items() if len(lst) > 1}
+
+def comparer_octets(groupes_par_taille: dict[int, list[Path]], x: int = 8) -> list[Path]:
+    """
+    Compare les x premiers octets des fichiers de même taille.
+    Retourne la liste des fichiers candidats (non isolés).
+    """
+    candidats = []
+
+    for fichiers in groupes_par_taille.values():
+        octets_map = defaultdict(list)
+
+        for fichier in fichiers:
+            try:
+                with open(fichier, "rb") as f:
+                    prefixe = f.read(x)
+                octets_map[prefixe].append(fichier)
+            except OSError:
+                continue
+
+        # On ne garde que les groupes avec doublons
+        for groupe in octets_map.values():
+            if len(groupe) > 1:
+                candidats.extend(groupe)
+
+    return candidats
+
+def comparer_hash(fichiers: list[Path]) -> list[list[Path]]:
+    """
+    Compare les hash des fichiers et retourne les vrais doublons.
+    """
+    hash_map = defaultdict(list)
+
+    for fichier in fichiers:
+        try:
+            hasher = hashlib.md5()
+            with open(fichier, "rb") as f:
+                while chunk := f.read(8192):
+                    hasher.update(chunk)
+            hash_map[hasher.hexdigest()].append(fichier)
+        except OSError:
             continue
-        
-        print(f"Analyse du répertoire: {repertoire_path.absolute()}")
-        
-        # Parcourir récursivement tous les fichiers
-        for fichier_path in repertoire_path.rglob('*'):
-            if fichier_path.is_file():
-                fichiers_traites += 1
-                if fichiers_traites % 100 == 0:
-                    print(f"  Fichiers analysés: {fichiers_traites}...", end='\r')
-                
-                hash_fichier = calculer_hash_fichier(fichier_path)
-                if hash_fichier:
-                    fichiers_par_hash[hash_fichier].append(fichier_path)
-    
-    print(f"\nTotal de fichiers analysés: {fichiers_traites}")
-    return fichiers_par_hash
 
-
-def identifier_doublons(fichiers_par_hash):
-    """
-    Identifie les fichiers en double (même hash).
-    
-    Args:
-        fichiers_par_hash: Dictionnaire {hash: [liste des chemins]}
-    
-    Returns:
-        Liste de groupes de fichiers en double
-    """
-    doublons = []
-    for hash_fichier, chemins in fichiers_par_hash.items():
-        if len(chemins) > 1:
-            doublons.append(chemins)
-    return doublons
-
-
-def formater_taille(taille_octets):
-    """
-    Formate une taille en octets en format lisible.
-    
-    Args:
-        taille_octets: Taille en octets
-    
-    Returns:
-        Chaîne formatée (ex: "1.5 MB")
-    """
-    for unite in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if taille_octets < 1024.0:
-            return f"{taille_octets:.2f} {unite}"
-        taille_octets /= 1024.0
-    return f"{taille_octets:.2f} PB"
-
+    # Chaque groupe contient uniquement de vrais doublons
+    return [groupe for groupe in hash_map.values() if len(groupe) > 1]
 
 def afficher_doublons(doublons):
     """
@@ -179,68 +142,4 @@ def main():
     """
     Fonction principale du programme.
     """
-    parser = argparse.ArgumentParser(
-        description='Supprime les fichiers en double dans un ou plusieurs répertoires.',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Exemples:
-  python supprimer_doublons.py /chemin/vers/repertoire
-  python supprimer_doublons.py /rep1 /rep2 /rep3
-  python supprimer_doublons.py /rep1 /rep2 --no-confirm
-        """
-    )
-    
-    parser.add_argument(
-        'repertoires',
-        nargs='+',
-        help='Un ou plusieurs répertoires à analyser'
-    )
-    
-    parser.add_argument(
-        '--no-confirm',
-        action='store_true',
-        help='Supprime les doublons sans demander de confirmation'
-    )
-    
-    parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Affiche les doublons sans les supprimer'
-    )
-    
-    args = parser.parse_args()
-    
-    print("=" * 60)
-    print("  Programme de suppression de fichiers en double")
-    print("=" * 60)
-    
-    # Parcourir les répertoires et identifier les doublons
-    fichiers_par_hash = parcourir_repertoires(args.repertoires)
-    doublons = identifier_doublons(fichiers_par_hash)
-    
-    # Afficher les résultats
-    afficher_doublons(doublons)
-    
-    # Supprimer les doublons si demandé
-    if not args.dry_run and doublons:
-        confirmer = not args.no_confirm
-        fichiers_supprimes, espace_recupere = supprimer_doublons(doublons, confirmer=confirmer)
-        
-        if fichiers_supprimes > 0:
-            print(f"\n{'=' * 60}")
-            print(f"Résumé:")
-            print(f"  Fichiers supprimés: {fichiers_supprimes}")
-            print(f"  Espace récupéré: {formater_taille(espace_recupere)}")
-            print(f"{'=' * 60}")
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nInterruption par l'utilisateur.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\nErreur inattendue: {e}", file=sys.stderr)
-        sys.exit(1)
-
+   
