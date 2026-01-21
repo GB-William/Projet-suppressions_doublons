@@ -72,7 +72,17 @@ def comparer_hash(fichiers: list[Path]) -> list[list[Path]]:
     # Chaque groupe contient uniquement de vrais doublons
     return [groupe for groupe in hash_map.values() if len(groupe) > 1]
 
-def afficher_doublons(doublons):
+def formater_taille(taille_octets: int) -> str:
+    """
+    Formate une taille en octets en format lisible (Ko, Mo, Go).
+    """
+    for unite in ['o', 'Ko', 'Mo', 'Go', 'To']:
+        if taille_octets < 1024.0:
+            return f"{taille_octets:.2f} {unite}"
+        taille_octets /= 1024.0
+    return f"{taille_octets:.2f} Po"
+
+def afficher_doublons(doublons: list[list[Path]]):
     """
     Affiche la liste des fichiers en double.
     
@@ -100,7 +110,7 @@ def afficher_doublons(doublons):
     print(f"Espace total qui peut être récupéré: {formater_taille(espace_total_recupere)}")
 
 
-def supprimer_doublons(doublons, confirmer=True):
+def supprimer_doublons(doublons: list[list[Path]], confirmer: bool = True) -> tuple[int, int]:
     """
     Supprime les fichiers en double.
     
@@ -138,8 +148,108 @@ def supprimer_doublons(doublons, confirmer=True):
     return fichiers_supprimes, espace_recupere
 
 
+def enumerer_fichiers(repertoires: list[str], recursif: bool = True) -> list[Path]:
+    """
+    Énumère tous les fichiers dans les répertoires donnés.
+    
+    Args:
+        repertoires: Liste des chemins de répertoires à parcourir
+        recursif: Si True, parcourt récursivement les sous-répertoires
+    
+    Returns:
+        Liste de tous les fichiers trouvés
+    """
+    fichiers = []
+    
+    for rep in repertoires:
+        chemin = Path(rep)
+        
+        if not chemin.exists():
+            print(f"⚠️  Le répertoire '{rep}' n'existe pas.", file=sys.stderr)
+            continue
+        
+        if chemin.is_file():
+            fichiers.append(chemin)
+        elif chemin.is_dir():
+            if recursif:
+                fichiers.extend([f for f in chemin.rglob('*') if f.is_file()])
+            else:
+                fichiers.extend([f for f in chemin.glob('*') if f.is_file()])
+    
+    return fichiers
+
+
 def main():
     """
     Fonction principale du programme.
     """
-   
+    parser = argparse.ArgumentParser(
+        description="Trouve et supprime les fichiers en double dans un ou plusieurs répertoires.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        'repertoires',
+        nargs='+',
+        help='Répertoire(s) à analyser'
+    )
+    
+    parser.add_argument(
+        '-d', '--delete',
+        action='store_true',
+        help='Supprimer les doublons (demande confirmation par défaut)'
+    )
+    
+    parser.add_argument(
+        '-y', '--yes',
+        action='store_true',
+        help='Supprimer sans demander confirmation (à utiliser avec --delete)'
+    )
+    
+    parser.add_argument(
+        '-n', '--non-recursive',
+        action='store_true',
+        help='Ne pas parcourir récursivement les sous-répertoires'
+    )
+    
+    args = parser.parse_args()
+    
+    print("🔍 Énumération des fichiers...")
+    fichiers = enumerer_fichiers(args.repertoires, recursif=not args.non_recursive)
+    
+    if not fichiers:
+        print("Aucun fichier trouvé.")
+        return
+    
+    print(f"   {len(fichiers)} fichier(s) trouvé(s).")
+    
+    print("\n📊 Regroupement par taille...")
+    groupes_taille = regrouper_par_taille(fichiers)
+    nb_candidats_taille = sum(len(g) for g in groupes_taille.values())
+    print(f"   {nb_candidats_taille} fichier(s) avec des tailles en commun.")
+    
+    if not groupes_taille:
+        print("\nAucun doublon trouvé!")
+        return
+    
+    print("\n🔬 Comparaison des premiers octets...")
+    candidats = comparer_octets(groupes_taille)
+    print(f"   {len(candidats)} candidat(s) potentiel(s).")
+    
+    if not candidats:
+        print("\nAucun doublon trouvé!")
+        return
+    
+    print("\n🔐 Calcul des hash MD5...")
+    doublons = comparer_hash(candidats)
+    
+    afficher_doublons(doublons)
+    
+    if args.delete and doublons:
+        nb_supprimes, espace = supprimer_doublons(doublons, confirmer=not args.yes)
+        if nb_supprimes > 0:
+            print(f"\n✅ {nb_supprimes} fichier(s) supprimé(s), {formater_taille(espace)} récupéré(s).")
+
+
+if __name__ == "__main__":
+    main()
